@@ -1,0 +1,145 @@
+#!/bin/bash
+# Copyright 2017 Brian Starkey <stark3y@gmail.com>
+
+APP=$(basename $0)
+
+function usage() {
+	cat <<EOM
+Usage: $APP COMMAND DIRECTORY [ARGS...]
+
+Set up chroot in DIRECTORY
+
+Commands:
+	init
+		Initialise a chroot in DIRECTORY
+		Builds the basic filesystem, and installs base tools:
+
+		sh, cat, nohup
+
+	install
+		Install ARGS in DIRECTORY
+		For each argument:
+		 - If it is a directory, it will be recursively copied
+		   into the chroot.
+		 - If it is an application, it will be copied, along with
+		   any library dependencies returned by 'ldd'
+		 - If it is a normal file, it will be copied into the
+		   chroot
+
+	mkdir
+		Create directories named ARGS in DIRECTORY
+EOM
+}
+
+function outpath() {
+	OUTPATH=$(realpath -m ${OUT}/$1)
+}
+
+function chroot_mkdirs() {
+	for d in $@
+	do
+		outpath $d
+		mkdir -vp $OUTPATH
+	done
+}
+
+function getlibs() {
+	LIBS=$(ldd `which $1` | grep -o '/.* ')
+}
+
+function install_prog() {
+	# Copy libs
+	getlibs $1
+	for lib in $LIBS
+	do
+		outpath $lib
+		cp -uv $lib $OUTPATH
+	done
+	outpath /usr/bin
+	cp -uv $1 $OUTPATH
+}
+
+function copyfiles() {
+	for m in $1
+	do
+		outpath $m
+		cp -urLTv $m $OUTPATH
+	done
+}
+
+function chroot_install() {
+	for i in $@
+	do
+		if [ -d $i ]
+		then
+			echo "Install dir $i"
+			chroot_mkdirs $i
+			copyfiles $i
+		elif [ -x $i ]
+		then
+			echo "Install prog $i"
+			install_prog $i
+		else
+			echo "Install file $i"
+			copyfiles $i
+		fi
+	done
+}
+
+function chroot_init() {
+	# Make dir
+	mkdir -vp $OUT
+
+	# Make base tree
+	DIRS="/dev /tmp /run /var /etc /usr/bin /usr/lib /proc /sys"
+	chroot_mkdirs $DIRS
+
+	# Link /lib
+	outpath /lib
+	ln -fns usr/lib $OUT/lib
+
+	# Make dev
+	outpath /dev
+	mknod -m 0666 $OUTPATH/null c 1 3
+	mknod -m 0666 $OUTPATH/random c 1 8
+	mknod -m 0444 $OUTPATH/urandom c 1 9
+
+	PROGS="/usr/bin/cat /usr/bin/sh /usr/bin/nohup"
+	chroot_install $PROGS
+}
+
+if [ $# -lt 2 ]
+then
+	usage
+	exit 1
+fi
+
+COMMAND=$1
+OUT=$2
+shift 2
+
+if [ ! -d $OUT ]
+then
+	echo "ERROR: Not a directory '$OUT'" >&2
+	usage
+	exit 1
+fi
+
+case $COMMAND in
+"init")
+	echo "Initialising chroot $OUT"
+	chroot_init
+	;;
+"install")
+	echo "Installing into chroot $OUT"
+	chroot_install $@
+	;;
+"mkdir")
+	echo "Creating directories in chroot $OUT"
+	chroot_mkdirs $@
+	;;
+*)
+	echo "ERROR: Unknown command $COMMAND"
+	usage
+	exit 1
+esac
